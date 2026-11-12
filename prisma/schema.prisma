@@ -1,0 +1,744 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+// generator client {
+//   provider = "prisma-client"
+//   output   = "../src/generated/prisma"
+// }
+
+// datasource db {
+//   provider = "postgresql"
+// }
+
+
+// generator client {
+//   provider = "prisma-client-js"
+// }
+
+// datasource db {
+//   provider = "postgresql"
+//   url = env("DATABASE_URL")
+// }
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // url is removed in Prisma 7
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum TrackType {
+  COMPETITIVE_EXAM    // e.g., GATE, UPSC (Fixed date, standard syllabus)
+  PLACEMENT_CAREER    // e.g., FAANG SDE, ML Engineer (Rolling dates)
+  INDUSTRY_SKILL      // e.g., AWS Cert, Full-Stack Mastery (Self-paced)
+}
+
+enum DependencyType {
+  HARD          // Blocks unlocking until prerequisite hits mastery threshold
+  SOFT          // Triggers warning banner, allows explicit override
+  CO_REQUISITE  // Scheduled in parallel tracks
+}
+
+enum PriorityTier {
+  TIER_1        // Weight multiplier 1.6x — Deep practice, frequent revision
+  TIER_2        // Weight multiplier 1.25x — Core coverage & full practice
+  TIER_3        // Weight multiplier 1.0x — Targeted coverage
+  TIER_4        // Enrichment / Low-yield buffer
+}
+
+enum CognitiveLoad {
+  HIGH          // Deep math, algorithmic proofs (peak energy slots)
+  MEDIUM        // Standard coding, DBMS queries, numericals
+  LOW           // Formula recall, passive revision, aptitude drills
+}
+
+enum TaskType {
+  LECTURE
+  NOTE_REVIEW
+  PRACTICE_SET
+  PYQ_DRILL
+  SPACED_REVISION
+  ERROR_REATTEMPT
+  TOPIC_TEST
+  FULL_MOCK
+  MOCK_ANALYSIS
+  CUSTOM
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  PARTIAL
+  OVERDUE
+  SKIPPED
+  DEFERRED
+}
+
+enum QuestionType {
+  MCQ
+  MSQ
+  NAT
+  ALGORITHMIC_CODING  // LeetCode style (Hidden test cases, IDE execution)
+  SYSTEM_DESIGN       // Architecture diagrams, scalability rubric
+  PROJECT_PORTFOLIO   // GitHub Repo, Kaggle Link, Deployed URL
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum ErrorCategory {
+  CONCEPTUAL_GAP
+  FORMULA_FORGOTTEN
+  CALCULATION_ERROR
+  MISREAD_QUESTION
+  CONCEPT_CONFUSION
+  TIME_PRESSURE
+  BLIND_GUESS
+}
+
+enum AccountabilityTone {
+  STRICT_PROFESSOR
+  DIRECT_ANALYST
+  SUPPORTIVE_COACH
+}
+
+// ============================================================================
+// DOMAIN 1: IDENTITY, AUTH & MULTI-TENANT WORKSPACE
+// ============================================================================
+
+model User {
+  id                  String             @id @default(cuid())
+  name                String
+  email               String             @unique
+  emailVerified       DateTime?
+  passwordHash        String?
+  image               String?
+  
+  // Preparation Parameters
+  dailyCapacityMins   Int                @default(600) // Default 10 hours
+  maxSubjectsPerDay   Int                @default(3)
+  preferredLanguage   String             @default("HINGLISH") 
+  accountabilityTone  AccountabilityTone @default(STRICT_PROFESSOR)
+  triageModeActive    Boolean            @default(false)
+  
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  // Auth Relations
+  accounts            Account[]
+  sessions            Session[]
+
+  // Tenant Isolated Workspace Relations
+  trackEnrollments    UserTrackEnrollment[]
+  subjectConfigs      UserSubjectConfig[]
+  topicStates         UserTopicState[]
+  lectureProgress     UserLectureProgress[]
+  studyPlans          StudyPlan[]
+  dailyTasks          DailyTask[]
+  studySessions       StudySession[]
+  questionAttempts    QuestionAttempt[]
+  codeSubmissions     CodeSubmission[]
+  errorLogs           ErrorLog[]
+  mockAttempts        MockAttempt[]
+  notes               Note[]
+  aiConversations     AIConversation[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserTrackEnrollment {
+  id                  String   @id @default(cuid())
+  userId              String
+  trackId             String
+  curriculumVersionId String
+  isPrimary           Boolean  @default(true)
+  
+  // Dynamic Timelines
+  targetEndDate       DateTime? // Fixed for Exams, Rolling for Placements
+  
+  // Track-Specific Goals
+  targetMarks         Float?    // For Competitive Exams
+  targetRank          Int?      // For Competitive Exams
+  targetCompanies     String[]  // For Placements (e.g., ["Google", "Microsoft"])
+  
+  createdAt           DateTime  @default(now())
+
+  user                User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  track               LearningTrack     @relation(fields: [trackId], references: [id])
+  curriculumVersion   CurriculumVersion @relation(fields: [curriculumVersionId], references: [id])
+
+  @@unique([userId, trackId])
+  @@index([userId])
+}
+
+// ============================================================================
+// DOMAIN 2: UNIFIED CAREER GRAPH (LEARNING TRACKS & CURRICULUM)
+// ============================================================================
+
+model LearningTrack {
+  id               String               @id @default(cuid())
+  type             TrackType
+  code             String               @unique // e.g., "GATE_CS_2027", "FAANG_SDE_2026"
+  title            String               
+  industryRole     String?              // Nullable, used for Placements
+  
+  versions         CurriculumVersion[]
+  enrollments      UserTrackEnrollment[]
+  mockTests        MockTest[]
+}
+
+model CurriculumVersion {
+  id               String               @id @default(cuid())
+  trackId          String
+  versionTag       String               // e.g., "v2027-official", "top-150-patterns"
+  isOfficial       Boolean              @default(true)
+  sourceUrl        String?
+  changelog        Json?                
+  createdAt        DateTime             @default(now())
+
+  track            LearningTrack        @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  subjects         Subject[]            // Represents Subjects OR Skill Domains
+  enrollments      UserTrackEnrollment[]
+
+  @@unique([trackId, versionTag])
+}
+
+model Subject {
+  id                String              @id @default(cuid())
+  curriculumVersionId String
+  code              String              // e.g., "TOC", "DSA", "SYS_DESIGN"
+  name              String
+  trackGroup        String              // e.g., "Theory", "Core DSA", "MLOps"
+  defaultPriority   PriorityTier        @default(TIER_2)
+  historicalWeight  Float               // Historical average marks or interview frequency
+  estimatedHours    Float
+  sequence          Int
+
+  curriculumVersion CurriculumVersion   @relation(fields: [curriculumVersionId], references: [id], onDelete: Cascade)
+  modules           Module[]
+  playlists         Playlist[]
+  userConfigs       UserSubjectConfig[]
+
+  // Subject-Level DAG Edges
+  prerequisites     SubjectDependency[] @relation("SubjectRequires")
+  dependents        SubjectDependency[] @relation("SubjectUnlocks")
+
+  @@unique([curriculumVersionId, code])
+  @@index([curriculumVersionId])
+}
+
+model SubjectDependency {
+  id             String         @id @default(cuid())
+  subjectId      String
+  prerequisiteId String
+  type           DependencyType @default(HARD)
+  minMasteryReq  Float          @default(65.0)
+
+  subject        Subject        @relation("SubjectRequires", fields: [subjectId], references: [id], onDelete: Cascade)
+  prerequisite   Subject        @relation("SubjectUnlocks", fields: [prerequisiteId], references: [id], onDelete: Cascade)
+
+  @@unique([subjectId, prerequisiteId])
+}
+
+model Module {
+  id            String   @id @default(cuid())
+  subjectId     String
+  title         String   
+  sequence      Int
+  estimatedMins Int
+
+  subject       Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  topics        Topic[]
+
+  @@index([subjectId, sequence])
+}
+
+model Topic {
+  id              String            @id @default(cuid())
+  moduleId        String
+  title           String
+  sequence        Int
+  estimatedMins   Int
+  cognitiveLoad   CognitiveLoad     @default(HIGH)
+  isHighYield     Boolean           @default(false)
+
+  module          Module            @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  lectures        Lecture[]
+  conceptMappings TopicConceptMap[]
+  userStates      UserTopicState[]
+  notes           Note[]
+  tasks           DailyTask[]
+  questions       Question[]        // Direct syllabus mapping
+
+  // Topic-Level DAG Edges
+  prerequisites   TopicDependency[] @relation("TopicRequires")
+  dependents      TopicDependency[] @relation("TopicUnlocks")
+
+  @@index([moduleId, sequence])
+}
+
+model TopicDependency {
+  id             String         @id @default(cuid())
+  topicId        String
+  prerequisiteId String
+  type           DependencyType @default(HARD)
+
+  topic          Topic          @relation("TopicRequires", fields: [topicId], references: [id], onDelete: Cascade)
+  prerequisite   Topic          @relation("TopicUnlocks", fields: [prerequisiteId], references: [id], onDelete: Cascade)
+
+  @@unique([topicId, prerequisiteId])
+}
+
+// Canonical Concept Node: Cross-pollinates progress across GATE and Placements
+model Concept {
+  id               String               @id @default(cuid())
+  slug             String               @unique // e.g., "dynamic-programming", "b-trees"
+  name             String
+  description      String?              @db.Text
+  
+  topicMappings    TopicConceptMap[]
+  questionMappings QuestionConceptMap[]
+}
+
+model TopicConceptMap {
+  topicId   String
+  conceptId String
+
+  topic     Topic   @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  concept   Concept @relation(fields: [conceptId], references: [id], onDelete: Cascade)
+
+  @@id([topicId, conceptId])
+}
+
+// ============================================================================
+// DOMAIN 3: MULTI-TEACHER RESOURCES & CURRICULUM FORKING
+// ============================================================================
+
+model Teacher {
+  id        String     @id @default(cuid())
+  name      String     
+  platform  String     
+  language  String     @default("HINGLISH")
+  playlists Playlist[]
+}
+
+model Playlist {
+  id           String              @id @default(cuid())
+  subjectId    String
+  teacherId    String?
+  createdById  String?             // Null = Global; UserId = Private fork
+  title        String
+  externalUrl  String?
+  isVerified   Boolean             @default(false)
+  totalMins    Int                 @default(0)
+
+  subject      Subject             @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacher      Teacher?            @relation(fields: [teacherId], references: [id])
+  lectures     Lecture[]
+  userConfigs  UserSubjectConfig[]
+
+  @@index([subjectId])
+}
+
+model Lecture {
+  id            String                @id @default(cuid())
+  playlistId    String
+  topicId       String?               
+  title         String
+  videoUrl      String
+  durationMins  Int
+  sequence      Int
+  notesPdfUrl   String?
+  transcript    String?               @db.Text
+
+  playlist      Playlist              @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  topic         Topic?                @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  userProgress  UserLectureProgress[]
+
+  @@index([playlistId, sequence])
+  @@index([topicId])
+}
+
+// Tenant Override: Safely isolates priority and teacher overrides
+model UserSubjectConfig {
+  id                 String       @id @default(cuid())
+  userId             String
+  subjectId          String
+  selectedPlaylistId String?
+  customPriority     PriorityTier
+  isLocked           Boolean      @default(false)
+  lockOverride       Boolean      @default(false) 
+  plannedStartDate   DateTime?
+  targetEndDate      DateTime?
+  actualEndDate      DateTime?
+  masteryScore       Float        @default(0.0)
+
+  user               User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject            Subject      @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  selectedPlaylist   Playlist?    @relation(fields: [selectedPlaylistId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, subjectId])
+  @@index([userId])
+}
+
+// ============================================================================
+// DOMAIN 4: GRANULAR MASTERY & COGNITIVE DECAY TELEMETRY
+// ============================================================================
+
+model UserTopicState {
+  id                String    @id @default(cuid())
+  userId            String
+  topicId           String
+  
+  // 6-Dimensional Mastery Components (0.0 to 100.0)
+  lectureCoverage   Float     @default(0.0)
+  practiceAccuracy  Float     @default(0.0)
+  pyqAccuracy       Float     @default(0.0)
+  retentionScore    Float     @default(100.0)
+  speedScore        Float     @default(0.0)
+  decayFactor       Float     @default(0.0) // Ebbinghaus "Rust" index
+  compositeMastery  Float     @default(0.0)
+
+  isMastered        Boolean   @default(false)
+  lastReviewedAt    DateTime?
+  nextRevisionDue   DateTime?
+  updatedAt         DateTime  @updatedAt
+
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic             Topic     @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topicId])
+  @@index([userId, nextRevisionDue])
+}
+
+model UserLectureProgress {
+  id               String    @id @default(cuid())
+  userId           String
+  lectureId        String
+  watchedSecs      Int       @default(0)
+  lastPositionSecs Int       @default(0)
+  isCompleted      Boolean   @default(false)
+  flaggedForReview Boolean   @default(false)
+  doubtTimestamps  Json?     // Array of { timeSecs: number, note: string }
+  updatedAt        DateTime  @updatedAt
+
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lecture          Lecture   @relation(fields: [lectureId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lectureId])
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  userId    String
+  topicId   String
+  title     String
+  content   String   @db.Text 
+  tags      String[]
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic     Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@index([userId, topicId])
+}
+
+// ============================================================================
+// DOMAIN 5: ADAPTIVE DAILY SCHEDULER & EXECUTION ENGINE
+// ============================================================================
+
+model StudyPlan {
+  id             String      @id @default(cuid())
+  userId         String
+  name           String      
+  isActive       Boolean     @default(true)
+  isSimulation   Boolean     @default(false) // Sandbox environment
+  startDate      DateTime
+  targetEndDate  DateTime
+  createdAt      DateTime    @default(now())
+
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks          DailyTask[]
+
+  @@index([userId, isActive])
+}
+
+model DailyTask {
+  id            String        @id @default(cuid())
+  userId        String
+  studyPlanId   String?
+  topicId       String?
+  title         String
+  description   String?
+  taskType      TaskType
+  cognitiveLoad CognitiveLoad @default(MEDIUM)
+  scheduledDate DateTime
+  estimatedMins Int
+  actualMins    Int           @default(0)
+  status        TaskStatus    @default(PENDING)
+  priorityOrder Int           @default(0)
+  reason        String?       // AI explanation
+  completedAt   DateTime?
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  studyPlan     StudyPlan?    @relation(fields: [studyPlanId], references: [id], onDelete: Cascade)
+  topic         Topic?        @relation(fields: [topicId], references: [id], onDelete: SetNull)
+
+  @@index([userId, scheduledDate, status])
+}
+
+model StudySession {
+  id             String    @id @default(cuid())
+  userId         String
+  startTime      DateTime  @default(now())
+  endTime        DateTime?
+  durationMins   Int
+  focusRating    Int?      // 1-5 scale for Burnout Monitor
+  tasksCompleted Int       @default(0)
+
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startTime])
+}
+
+// ============================================================================
+// DOMAIN 6: ASSESSMENTS, AI CODING SANDBOX & SM-2 ERROR NOTEBOOK
+// ============================================================================
+
+model Question {
+  id                String               @id @default(cuid())
+  trackCode         String?              // e.g., "GATE_CS", "FAANG_SDE"
+  topicId           String?
+  type              QuestionType
+  year              Int?                 
+  session           String?              
+  questionNumber    Int?
+  difficulty        Difficulty           @default(MEDIUM)
+  marks             Float                @default(1.0)
+  negativeMarks     Float                @default(0.33)
+  idealTimeSecs     Int                  @default(120)
+  
+  content           String               @db.Text 
+  options           Json?                
+  correctAnswer     String               @db.Text // Can be logic check for System Design
+  solution          String?              @db.Text
+  sourceAttribution String?              
+  sourceUrl         String?
+
+  topic             Topic?               @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  algorithmicMeta   AlgorithmicMetadata?
+  conceptMappings   QuestionConceptMap[]
+  attempts          QuestionAttempt[]
+  errorLogs         ErrorLog[]
+  codeSubmissions   CodeSubmission[]
+  mockQuestions     MockTestQuestion[]
+
+  @@index([trackCode, year])
+}
+
+model AlgorithmicMetadata {
+  id             String     @id @default(cuid())
+  questionId     String     @unique
+  timeLimitMs    Int        @default(2000)
+  memoryLimitKb  Int        @default(256000)
+  starterCode    Json       // e.g., { "python": "def solve():" }
+  
+  testCases      CodingTestCase[]
+  question       Question   @relation(fields: [questionId], references: [id], onDelete: Cascade)
+}
+
+model CodingTestCase {
+  id                    String              @id @default(cuid())
+  algorithmicMetadataId String
+  input                 String              @db.Text
+  expectedOutput        String              @db.Text
+  isHidden              Boolean             @default(true)
+  weightage             Float               @default(1.0)
+
+  algorithmicMetadata   AlgorithmicMetadata @relation(fields: [algorithmicMetadataId], references: [id], onDelete: Cascade)
+}
+
+model CodeSubmission {
+  id              String   @id @default(cuid())
+  userId          String
+  questionId      String
+  language        String   // "python", "cpp", "java"
+  sourceCode      String   @db.Text
+  executionTimeMs Int?
+  memoryUsedKb    Int?
+  status          String   // "ACCEPTED", "WRONG_ANSWER", "TIME_LIMIT_EXCEEDED", "COMPILATION_ERROR"
+  submittedAt     DateTime @default(now())
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question        Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, questionId, status])
+}
+
+model QuestionConceptMap {
+  questionId String
+  conceptId  String
+
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  concept    Concept  @relation(fields: [conceptId], references: [id], onDelete: Cascade)
+
+  @@id([questionId, conceptId])
+}
+
+model QuestionAttempt {
+  id              String   @id @default(cuid())
+  userId          String
+  questionId      String
+  userAnswer      String?  @db.Text
+  isCorrect       Boolean
+  timeTakenSecs   Int
+  confidenceLevel Int      @default(3) // 1 (Guess) to 5 (Certain)
+  scratchpadData  Json?    
+  attemptedAt     DateTime @default(now())
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question        Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, questionId])
+  @@index([userId, attemptedAt])
+}
+
+model ErrorLog {
+  id              String        @id @default(cuid())
+  userId          String
+  questionId      String
+  category        ErrorCategory
+  rootCauseNote   String?       @db.Text
+  correctionPlan  String?       @db.Text
+  semanticCluster String?       
+  
+  // SuperMemo-2 (SM-2) Spaced Repetition State
+  repetitionCount Int           @default(0)
+  easeFactor      Float         @default(2.5)
+  intervalDays    Int           @default(1)
+  nextReviewDate  DateTime
+  isMastered      Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question        Question      @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, nextReviewDate, isMastered])
+}
+
+model MockTest {
+  id            String             @id @default(cuid())
+  trackId       String
+  title         String
+  durationMins  Int                @default(180)
+  totalMarks    Float              @default(100.0)
+  isHostileMode Boolean            @default(true)
+
+  track         LearningTrack      @relation(fields: [trackId], references: [id])
+  questions     MockTestQuestion[]
+  attempts      MockAttempt[]
+}
+
+model MockTestQuestion {
+  mockTestId String
+  questionId String
+  sequence   Int
+
+  mockTest   MockTest @relation(fields: [mockTestId], references: [id], onDelete: Cascade)
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@id([mockTestId, questionId])
+}
+
+model MockAttempt {
+  id             String                 @id @default(cuid())
+  userId         String
+  mockTestId     String
+  marksObtained  Float
+  accuracy       Float
+  timeSpentMins  Int
+  startedAt      DateTime               @default(now())
+  completedAt    DateTime?
+
+  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mockTest       MockTest               @relation(fields: [mockTestId], references: [id])
+  responses      MockQuestionResponse[]
+
+  @@index([userId, completedAt])
+}
+
+model MockQuestionResponse {
+  id            String      @id @default(cuid())
+  mockAttemptId String
+  questionId    String
+  userAnswer    String?     @db.Text
+  isCorrect     Boolean
+  marksAwarded  Float
+  timeTakenSecs Int
+  markedReview  Boolean     @default(false)
+
+  mockAttempt   MockAttempt @relation(fields: [mockAttemptId], references: [id], onDelete: Cascade)
+
+  @@unique([mockAttemptId, questionId])
+}
+
+// ============================================================================
+// DOMAIN 7: AI MENTOR & DIAGNOSTIC ENGINE
+// ============================================================================
+
+model AIConversation {
+  id        String      @id @default(cuid())
+  userId    String
+  context   String?     // e.g., "TOPIC:toc-cfg", "ALGO_DEBUGGING"
+  createdAt DateTime    @default(now())
+  messages  AIMessage[]
+
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AIMessage {
+  id             String         @id @default(cuid())
+  conversationId String
+  role           String         // "user" | "assistant" | "system"
+  content        String         @db.Text
+  createdAt      DateTime       @default(now())
+
+  conversation   AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
